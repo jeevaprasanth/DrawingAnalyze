@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // ✅ Create axios instance
 const api = axios.create({
-  baseURL: 'https://drawinganalyze.onrender.com', // ✅ FIX 1: point to backend
+  baseURL: 'https://drawinganalyze.onrender.com/api', // ✅ FIX 1: point to backend
 });
 
 // =============================
