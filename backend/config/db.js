@@ -1,47 +1,59 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-const DB_NAME = process.env.DB_NAME || 'engineering_drawing_db';
+const DB_NAME = process.env.DB_NAME || 'defaultdb';
 
-// Create initial connection without specifying database
+// SSL config for Aiven
+const sslConfig = {
+  rejectUnauthorized: false
+};
+
+// Initial connection (without database)
 const initPool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'jeeva@1824S',
-  port: process.env.DB_PORT || 3306,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  port: process.env.DB_PORT,
   waitForConnections: true,
   connectionLimit: 2,
-  queueLimit: 0
+  queueLimit: 0,
+  ssl: sslConfig
 });
 
-// Create MySQL connection pool for the actual database
+// Main database pool
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'jeeva@1824S',
-  database: DB_NAME,
-  port: process.env.DB_PORT || 3306,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || DB_NAME,
+  port: process.env.DB_PORT,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  ssl: sslConfig
 });
 
-/**
- * Initialize database tables
- * Creates database and all required tables if they don't exist
- */
 async function initializeDatabase() {
   try {
-    // First, create the database if it doesn't exist
-    const initConn = await initPool.getConnection();
-    await initConn.execute(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    initConn.release();
-    console.log(`Database '${DB_NAME}' ensured to exist`);
+    console.log('Connecting to database...');
 
-    // Now connect to the actual database and create tables
+    const initConn = await initPool.getConnection();
+
+    await initConn.execute(`
+      CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_unicode_ci
+    `);
+
+    initConn.release();
+
+    console.log(`Database '${DB_NAME}' verified`);
+
     const connection = await pool.getConnection();
-    
-    // Create pdf_files table
+
+    console.log('Database connection successful');
+
+    // ---------- pdf_files ----------
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS pdf_files (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -49,12 +61,13 @@ async function initializeDatabase() {
         stored_file_name VARCHAR(255) NOT NULL,
         file_path VARCHAR(500) NOT NULL,
         file_size BIGINT DEFAULT 0,
-        upload_status ENUM('uploaded', 'analyzing', 'completed', 'failed') DEFAULT 'uploaded',
+        upload_status ENUM('uploaded','analyzing','completed','failed')
+        DEFAULT 'uploaded',
         uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
-    // Create components table
+    // ---------- components ----------
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS components (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -62,11 +75,12 @@ async function initializeDatabase() {
         component_name VARCHAR(100) NOT NULL,
         page_number INT DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id) ON DELETE CASCADE
+        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id)
+        ON DELETE CASCADE
       )
     `);
 
-    // Create elements table
+    // ---------- elements ----------
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS elements (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -77,11 +91,12 @@ async function initializeDatabase() {
         value2 VARCHAR(50) DEFAULT NULL,
         value3 VARCHAR(50) DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (component_id) REFERENCES components(id) ON DELETE CASCADE
+        FOREIGN KEY (component_id) REFERENCES components(id)
+        ON DELETE CASCADE
       )
     `);
 
-    // Create bom_data table
+    // ---------- bom_data ----------
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS bom_data (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -91,11 +106,12 @@ async function initializeDatabase() {
         item_code VARCHAR(200) DEFAULT NULL,
         page_number INT DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id) ON DELETE CASCADE
+        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id)
+        ON DELETE CASCADE
       )
     `);
 
-    // Create analysis_results table
+    // ---------- analysis_results ----------
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS analysis_results (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -104,7 +120,8 @@ async function initializeDatabase() {
         element VARCHAR(50) DEFAULT NULL,
         item_code VARCHAR(200) DEFAULT NULL,
         description TEXT,
-        match_status ENUM('matched', 'partial_match', 'no_match') DEFAULT 'no_match',
+        match_status ENUM('matched','partial_match','no_match')
+        DEFAULT 'no_match',
         confidence_score INT DEFAULT 0,
         remarks TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -122,47 +139,24 @@ async function initializeDatabase() {
         bbox_y FLOAT DEFAULT NULL,
         bbox_width FLOAT DEFAULT NULL,
         bbox_height FLOAT DEFAULT NULL,
-        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id) ON DELETE CASCADE
+        FOREIGN KEY (pdf_id) REFERENCES pdf_files(id)
+        ON DELETE CASCADE
       )
     `);
 
-    // Migration: Add missing columns to analysis_results if upgrading from old schema
-    // MySQL does NOT support ADD COLUMN IF NOT EXISTS, so try individually
-    const columnsToAdd = [
-      { name: 'related_elements', type: 'VARCHAR(200) DEFAULT NULL' },
-      { name: 'first_element_value', type: 'VARCHAR(50) DEFAULT NULL' },
-      { name: 'extracted_number', type: 'INT DEFAULT NULL' },
-      { name: 'second_element_value', type: 'VARCHAR(50) DEFAULT NULL' },
-      { name: 'second_extracted_number', type: 'INT DEFAULT NULL' },
-      { name: 'second_item_code', type: 'VARCHAR(200) DEFAULT NULL' },
-      { name: 'third_element_value', type: 'VARCHAR(50) DEFAULT NULL' },
-      { name: 'third_extracted_number', type: 'INT DEFAULT NULL' },
-      { name: 'third_item_code', type: 'VARCHAR(200) DEFAULT NULL' },
-      { name: 'page_number', type: 'INT DEFAULT 1' },
-      { name: 'bbox_x', type: 'FLOAT DEFAULT NULL' },
-      { name: 'bbox_y', type: 'FLOAT DEFAULT NULL' },
-      { name: 'bbox_width', type: 'FLOAT DEFAULT NULL' },
-      { name: 'bbox_height', type: 'FLOAT DEFAULT NULL' }
-    ];
-    for (const col of columnsToAdd) {
-      try {
-        await connection.execute(`ALTER TABLE analysis_results ADD COLUMN \`${col.name}\` ${col.type}`);
-      } catch (colError) {
-        // Error 1060 = Duplicate column name - ignore, column already exists
-        if (colError.errno !== 1060) {
-          console.warn(`Migration note for ${col.name}:`, colError.message);
-        }
-      }
-    }
-
     connection.release();
-    // Close the init pool since it's no longer needed
+
     await initPool.end();
-    console.log('Database tables initialized successfully');
+
+    console.log('✅ Database tables initialized successfully');
+
   } catch (error) {
-    console.error('Error initializing database:', error.message);
+    console.error('❌ Database Error:', error);
     throw error;
   }
 }
 
-module.exports = { pool, initializeDatabase };
+module.exports = {
+  pool,
+  initializeDatabase
+};
